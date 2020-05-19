@@ -1,0 +1,209 @@
+#$ -V
+
+#$ -m n
+#$ -cwd
+#$ -j n -o _$JOB_NAME.out -e _$JOB_NAME.err
+## -j y -o $JOB_NAME.out-and-err
+
+#Array job (10 tasks for this job, with SGE_TASK_ID from 1 to 10):
+#$ -t 1-10:1
+#$ -pe threaded 4
+#$ -l num_GTXany_per_task=0
+
+# For cluster use
+source /opt/gcc/gccvars-6.4.0.sh
+export CC=/opt/gcc/gcc-6.4.0_x86_64local/bin/gcc
+
+if [[ $#  -eq 0 ]] ; then
+    echo 'No JSON file provided'
+    exit 0
+fi
+
+# needed relative paths
+SCRIPT_PATH='/home/ben/experiments/RiverCrossing/scripts/'
+# executable name
+PROGRAM='RiverCrossing'
+DIRECTORY='runs'
+PARAMETER_DIR='../configuration'
+# variables for snapshotting
+let SNAPSHOT_EVERY_TIMESTEP=100
+let RUN_TO_TIMESTEP=2000000
+
+# JSON parameter file name
+PARAMETER=$1
+
+# Get name of Task
+TASK_NAME=$(grep name ${SCRIPT_PATH}/${PARAMETER_DIR}/${PARAMETER}.json | tail -1 | grep -Po '(["\\''])(?:(?=(\\?))\2.)*?\1')
+TASK_NAME=$(echo $TASK_NAME | sed -e  's/^"name"//' -e  's/^ "//' -e  's/"$//')
+files=`echo ${TASK_NAME}-training.{out,err} snapshot.json`
+
+# Go to the directory in which the executable is in
+cd ${SCRIPT_PATH}
+cd ../ 
+
+# Variables for run
+let n=0
+let from=0
+let to=0
+let fitness=0
+let THREADS=1
+
+if [ $#  -ne 1 ]; then
+	THREADS=$2
+fi
+
+# Variables if incomplete
+incomplete_run="false"
+let orginal_from=0
+
+for RUN in {0..50} ;do
+	let n++
+
+	# eq - is equal to
+	if [ $n -eq $SGE_TASK_ID ] ;then
+
+		mkdir -p ${DIRECTORY}/${TASK_NAME}/run-${RUN}/train && cd ${DIRECTORY}/${TASK_NAME}/run-${RUN}/train
+
+		if [ ! -d "${PARAMETER_DIR}" ]; then
+			# Save the orginal parameter file
+			mkdir -p ${PARAMETER_DIR}
+		fi
+
+		cp ${SCRIPT_PATH}/${PARAMETER_DIR}/${PARAMETER}.json ${PARAMETER_DIR}/
+		sed -e "2i\    \"threads\": ${THREADS}," ${PARAMETER_DIR}/${PARAMETER}.json > ${PARAMETER_DIR}/${PARAMETER}.json.tmp
+		mv ${PARAMETER_DIR}/${PARAMETER}.json.tmp ${PARAMETER_DIR}/${PARAMETER}.json
+
+		# Need a stopping function here
+		# True if 'old_snapshots' exists and is a directory.
+		# if [ -d old_snapshots ] ;then exit 0 ;fi #  Task complete ... line added in case job or task re-run despite already completing
+
+		echo Task $SGE_TASK_ID running on `hostname` at `date +%H:%M:%S' on '%d%b%Y' : '%s' seconds'` &>> ${TASK_NAME}-training.log
+
+
+		# If snapshot create 'continue-from' folder
+		if [ -f snapshot.json ] ;then
+			# Get fitness
+			fitness=$(grep fitness snapshot.json | tail -1 )
+			fitness=$(echo ${fitness} |  grep -Po ': .*,' | sed 's/: //g' | sed 's/,//g')
+			
+			# Stopping Criteria --------------------------------------------------------------------------
+			#  Stop if fittest animat has been achieved
+			if [ ${fitness} == 4.0 ] ;then
+				#  Task complete
+				exit 1
+			fi
+
+			#  If there is not a contine-from there has been an error
+			if [ ! -L continue-from ] ;then
+				exit 1
+			fi	
+			# --------------------------------------------------------------------------------------------
+
+			SELF_PATH='continue-from'
+			sofar_path=$(readlink "$SELF_PATH")
+			continue_dir=$(basename "$sofar_path")
+			continue_dir=(${continue_dir//-/ })
+			orginal_from=${continue_dir[0]}
+
+			# Get generation
+			to=$(grep generation snapshot.json | tail -1 )
+			to=$(echo ${to} |  grep -Po ': .*,' | sed 's/: //g' | sed 's/,//g')
+
+			saveto=so-far/${orginal_from}-${to}
+
+			#  Rename the old continue-from
+			mv ${sofar_path} ${saveto}
+
+			# For everyfile in $files to $saveto if not empty
+			for f in ${files}
+			do
+				if [[ -s ${f} ]]; then
+					mv ${f} ${saveto}/
+				else
+					rm ${f}
+				fi
+			done
+			rm *.json
+			ln -fsT ${saveto} continue-from
+
+			#  Update for future directories 
+			from=${to}
+			to=${continue_dir[1]}
+
+			incomplete_run="true"
+		fi	
+
+
+		# False if 'continue-from' exists and is a symbolic link.
+		if [ ! -L continue-from ] ;then		
+			# Varbles to track number of iterations 
+			let to=${from}+${SNAPSHOT_EVERY_TIMESTEP}
+		else
+			cp continue-from/snapshot.json ./
+			#  If run was not complete, run to the appropriate generation
+			if [ ${incomplete_run} == "false" ] ; then
+				# # Copy the previous snapshot to current directory  and get generation
+				from=$(grep generation snapshot.json | tail -1)
+				from=$(echo ${from} |  grep -Po ': .*,' | sed 's/: //g' | sed 's/,//g')
+				from=$((${from} + 1))
+				let to=${from}+${SNAPSHOT_EVERY_TIMESTEP}
+			else
+				incomplete_run="false"
+			fi
+		fi
+
+		saveto=so-far/${from}-${to}
+
+		# mkdir -p == no error if existing, make parent directories as needed
+		mkdir -p ${saveto}
+		# ln - make links between files
+		# -f   remove existing destination files
+		# -s   make symbolic links instead of hard links
+		# -T   treat LINK_NAME as a normal file always
+		ln -fsT ${saveto} continue-from
+
+		# Create appropriate file for run 
+		sed -e 's/\(max_generation\)[^\&]\+/max_generation": '"$to"',/' ${PARAMETER_DIR}/${PARAMETER}.json > ${PARAMETER}_${to}.json
+		# Activate Program
+		eval ../../../../out/${PROGRAM} ${PARAMETER}_${to}.json >${TASK_NAME}-training.out 2>${TASK_NAME}-training.err
+
+		# Stopping Criteria --------------------------------------------------------------------------
+		# Get fitness
+		fitness=$(grep fitness snapshot.json | tail -1 )
+		fitness=$(echo ${fitness} |  grep -Po ': .*,' | sed 's/: //g' | sed 's/,//g')
+		if [ ${fitness} == "4.0" ] ;then
+			#  Task complete
+			exit 1
+		fi
+		# --------------------------------------------------------------------------------------------
+
+		# For everyfile in $files to $saveto if not empty
+		for f in ${files}
+
+		do
+			if [[ -s ${f} ]]; then
+				mv ${f} ${saveto}/
+			else
+				rm ${f}
+			fi
+		done
+
+		rm *.json
+		cd ${scripte_path}
+
+		# Stopping Criteria --------------------------------------------------------------------------
+		#  ge - is greater than or equal to
+		if [ ${to} -ge ${RUN_TO_TIMESTEP} ] ;then
+			#  Task complete
+			exit 1
+		fi
+
+		# Tell Grid Engine to reschedule this task so that it will play nice with the scheduler 
+		# and continue later rather than run forever
+		exit 99 
+		# --------------------------------------------------------------------------------------------
+		fi
+
+	# Seed is taken from the system clock, sleep provides unqiue times between runs
+	sleep 10
+done

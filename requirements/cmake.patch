@@ -1,0 +1,13 @@
+--- test/jsoncpp/CMakeLists.txt	2018-06-23 20:02:35.000000000 +0100
++++ jsoncpp/CMakeLists.txt	2018-06-23 20:19:55.000000000 +0100
+@@ -22,6 +22,10 @@
+     ENDIF()
+ ENDIF()
+ 
++IF(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
++  SET(CMAKE_INSTALL_PREFIX ../../../../ CACHE PATH <comment> FORCE)
++ENDIF(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
++
+ # Enable runtime search path support for dynamic libraries on OSX
+ IF(APPLE)
+     SET(CMAKE_MACOSX_RPATH 1)

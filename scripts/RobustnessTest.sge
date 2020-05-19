@@ -1,0 +1,46 @@
+#!/bin/bash
+#$ -S /bin/bash
+
+#$ -m n
+#$ -cwd
+#$ -j n -o $JOB_NAME.out -e $JOB_NAME.err
+## -j y -o $JOB_NAME.out-and-err
+
+# array job (10 tasks for this job, with SGE_TASK_ID from 1 to 10):
+#$ -t 1-10:1
+#$ -pe threaded 1
+#$ -l num_GTXany_per_task=0
+
+# for cluster
+source /opt/gcc/gccvars-6.4.0.sh
+export CC=/opt/gcc/gcc-6.4.0_x86_64local/bin/gcc
+
+if [[ $# -eq 0 ]] ; then
+    echo 'No JSON file provided'
+    exit 0
+fi
+
+# excuteable name
+PROGRAM='RiverCrossing'
+DIRECTORY='runs'
+PARAMETER=$1
+
+# go to the directory in which the excuteable is in
+cd ../
+
+# SGE Task needs to be reduced by 1
+x=${SGE_TASK_ID}
+y=1
+RUN=$(echo $(( x - y )))
+
+mkdir -p ${DIRECTORY}/${PARAMETER}/run-${RUN}/validate && cd  ${DIRECTORY}/${PARAMETER}/run-${RUN}/validate
+
+cp ../train/snapshot.json .
+
+# get name of task
+task_name=$(grep name snapshot.json | tail -1 | grep -Po '(["\\''])(?:(?=(\\?))\2.)*?\1')
+task_name=$(echo $task_name | sed -e  's/^"name"//' -e  's/^ "//' -e  's/"$//')
+
+eval "../../../../out/${PROGRAM}" > "${task_name}"-robust.out 2> "${task_name}"-robust.err
+
+cd ../../../../
